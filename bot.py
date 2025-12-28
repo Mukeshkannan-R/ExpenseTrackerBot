@@ -1,12 +1,19 @@
 import logging
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from telegram_bot_calendar import DetailedTelegramCalendar, LSTEP
 from sheets_service import add_expense_row
+import aiohttp
+import aiohttp.web
+from aiohttp import web
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 DATE, CURRENCY, AMOUNT, CATEGORY, NOTE = range(5)
 
+# YOUR HANDLERS (UNCHANGED - copy all your async functions exactly)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚀 Expense Bot ready!\n/add - Add expense")
 
@@ -80,10 +87,21 @@ async def note_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     return ConversationHandler.END
 
-def main():
-    # 🚨 REPLACE WITH YOUR BOT TOKEN FROM @BotFather
-    app = ApplicationBuilder().token("8107075959:AAGwtrJnL4LAuXW5_R9HQxisg-Ur0SUQ-bo").build()
+# WEBHOOK HANDLER (NEW)
+async def telegram_webhook_handler(request):
+    """Handle Telegram webhook updates"""
+    update = Update.de_json(await request.json(), request.app['bot'])
+    await request.app['application'].process_update(update)
+    return web.Response()
+
+# MAIN WEBHOOK SERVER (NEW)
+async def on_startup(app):
+    """Build and start application"""
+    token = "8107075959:AAGwtrJnL4LAuXW5_R9HQxisg-Ur0SUQ-bo"
+    builder = ApplicationBuilder().token(token)
+    app['application'] = builder.build()
     
+    # Add all your handlers (SAME AS BEFORE)
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("add", add_command)],
         states={
@@ -96,11 +114,28 @@ def main():
         fallbacks=[CommandHandler("cancel", lambda u,c: ConversationHandler.END)]
     )
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(conv_handler)
+    app['application'].add_handler(CommandHandler("start", start))
+    app['application'].add_handler(conv_handler)
     
-    print("🤖 Bot starting...")
-    app.run_polling()
+    await app['application'].initialize()
+    await app['application'].start()
+    await app['application'].updater.start_polling()  # Light polling for webhook setup
+    logger.info("🤖 Webhook bot started!")
+
+async def on_shutdown(app):
+    """Cleanup on shutdown"""
+    await app['application'].stop()
+    await app['application'].shutdown()
+
+def main():
+    app = web.Application()
+    app.router.add_post('/telegram-webhook', telegram_webhook_handler)
+    
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+    
+    port = int(os.getenv('PORT', 10000))
+    web.run_app(app, host='0.0.0.0', port=port)
 
 if __name__ == "__main__":
     main()
