@@ -1,6 +1,5 @@
-# requirements.txt - CLEAN VERSION
 python-telegram-bot==20.7
-python-telegram-bot-calendar==2.0.0
+python-telegram-bot-calendar==1.0.5
 aiohttp==3.10.5
 requests==2.32.5
 gunicorn==23.0.0
