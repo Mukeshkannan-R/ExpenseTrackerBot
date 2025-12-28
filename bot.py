@@ -1,10 +1,9 @@
 import logging
 import os
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from telegram_bot_calendar import DetailedTelegramCalendar, LSTEP
 from sheets_service import add_expense_row
-import aiohttp
 import aiohttp.web
 from aiohttp import web
 
@@ -13,7 +12,10 @@ logger = logging.getLogger(__name__)
 
 DATE, CURRENCY, AMOUNT, CATEGORY, NOTE = range(5)
 
-# YOUR HANDLERS (UNCHANGED - copy all your async functions exactly)
+TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8107075959:AAGwtrJnL4LAuXW5_R9HQxisg-Ur0SUQ-bo')
+WEBHOOK_PATH = f"/webhook/{TOKEN}"
+
+# ALL YOUR HANDLERS (UNCHANGED - copy exactly)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚀 Expense Bot ready!\n/add - Add expense")
 
@@ -87,21 +89,23 @@ async def note_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     return ConversationHandler.END
 
-# WEBHOOK HANDLER (NEW)
-async def telegram_webhook_handler(request):
-    """Handle Telegram webhook updates"""
-    update = Update.de_json(await request.json(), request.app['bot'])
-    await request.app['application'].process_update(update)
-    return web.Response()
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Cancelled")
+    context.user_data.clear()
+    return ConversationHandler.END
 
-# MAIN WEBHOOK SERVER (NEW)
+# FIXED WEBHOOK HANDLER (Direct Bot + Application)
+async def telegram_webhook_handler(request):
+    json_data = await request.json()
+    update = Update.de_json(json_data, request.app['bot'])
+    await request.app['application'].process_update(update)
+    return web.json_response({}, status=200)
+
+# FIXED STARTUP (No ApplicationBuilder - Pure webhook)
 async def on_startup(app):
-    """Build and start application"""
-    token = "8107075959:AAGwtrJnL4LAuXW5_R9HQxisg-Ur0SUQ-bo"
-    builder = ApplicationBuilder().token(token)
-    app['application'] = builder.build()
+    app['bot'] = Bot(token=TOKEN)
+    app['application'] = Application.builder().token(TOKEN).build()
     
-    # Add all your handlers (SAME AS BEFORE)
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("add", add_command)],
         states={
@@ -111,7 +115,8 @@ async def on_startup(app):
             CATEGORY: [CallbackQueryHandler(category_handler)],
             NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, note_handler)]
         },
-        fallbacks=[CommandHandler("cancel", lambda u,c: ConversationHandler.END)]
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True
     )
     
     app['application'].add_handler(CommandHandler("start", start))
@@ -119,18 +124,22 @@ async def on_startup(app):
     
     await app['application'].initialize()
     await app['application'].start()
-    await app['application'].updater.start_polling()  # Light polling for webhook setup
-    logger.info("🤖 Webhook bot started!")
+    logger.info("🤖 PURE WEBHOOK BOT READY!")
 
 async def on_shutdown(app):
-    """Cleanup on shutdown"""
     await app['application'].stop()
     await app['application'].shutdown()
 
+async def set_webhook(request):
+    webhook_url = f"https://{request.host}{WEBHOOK_PATH}"
+    await request.app['bot'].set_webhook(url=webhook_url)
+    return web.json_response({"status": "success", "webhook_url": webhook_url})
+
 def main():
     app = web.Application()
-    app.router.add_post('/telegram-webhook', telegram_webhook_handler)
-    
+    app.router.add_post(WEBHOOK_PATH, telegram_webhook_handler)
+    app.router.add_get('/health', lambda req: web.json_response({"status": "ok"}))
+    app.router.add_post('/setwebhook', set_webhook)
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
     
